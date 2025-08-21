@@ -1,4 +1,4 @@
-# app.py  — Dual Stacking Explorer (full: rewards model + options)
+# app.py  — Dual Stacking Explorer (final: no STX-terms APR, rewards model ×26, no top-up)
 # Run: streamlit run app.py
 
 import numpy as np
@@ -38,11 +38,6 @@ def apr_pure(phi, T_eff, S0, S2_eff, rho):
     # Help: APR_pure(BTC terms) = r_stx * ρ * 100. Uses S2_eff for dilution (can exclude S2 if toggled).
     return r_stx(phi, T_eff, S0, S2_eff) * rho * 100.0
 
-def apr_pure_stx_terms(phi, T_eff, S0, S2_eff):
-    """Pure staking APR in % (STX terms) for S0 only (no ρ conversion)."""
-    # Help: Shows the 'flux' yield in native STX units (no revaluation). Uses S2_eff in dilution.
-    return r_stx(phi, T_eff, S0, S2_eff) * 100.0
-
 def apr_tier2_composite(phi, T_eff, S0, B1, m2, B2, S2_eff, rho, exclude_s2_from_capital: bool):
     """Tier-2 APR (%) — BTC + STX capital; STX unboosted, BTC boosted.
 
@@ -74,12 +69,6 @@ exclude_s2_toggle = st.sidebar.checkbox(
     value=False,
     help="If enabled, APR calculations ignore S₂ both in STX-leg dilution and in capital denominators. "
          "Useful to see APRs without collateral-induced dilution. Rewards/gains remain based on true pool rates."
-)
-
-show_topup_toggle = st.sidebar.checkbox(
-    "Show collateral top-up / release for current setup",
-    value=False,
-    help="Displays how much STX must be added (top-up) or can be released to meet the α×min rule at current ρ and B₂."
 )
 
 # Calibration
@@ -120,13 +109,13 @@ rho = st.sidebar.number_input(
 st.sidebar.subheader("Rewards model (optional)")
 with st.sidebar.expander("Configure exponential model", expanded=False):
     st.markdown(
-        "Modeled form:  \n"
-        r"**Rewards Calculated (BTC)** = \( a \cdot e^{\,b\cdot(\rho / \rho_{\max})} \)  \n"
+        "Modeled form (annualized by ×26 cycles/year):  \n"
+        r"**Rewards Calculated (BTC)** = \( 26 \cdot a \cdot e^{\,b\cdot(\rho / \rho_{\max})} \)  \n"
         "where ρ is your current **STX per BTC** (same input above)."
     )
     a_param = st.number_input(
         "a (BTC)", min_value=0.0, value=61.99, step=0.1,
-        help="Scale parameter; theoretical maximum rewards near ρ→0 in this simple form."
+        help="Scale parameter of the per-cycle model; multiplied by 26 to annualize."
     )
     b_param = st.number_input(
         "b (unitless)", min_value=-10.0, max_value=0.0, value=-2.345, step=0.001,
@@ -137,15 +126,15 @@ with st.sidebar.expander("Configure exponential model", expanded=False):
         help="Normalization constant to scale ρ inside the exponent (use the maximum ρ of your dataset)."
     )
 
-# Compute modeled rewards at the current ρ
+# Compute modeled rewards at the current ρ (ANNUAL = per-cycle model × 26)
 rho_clamped = max(0.0, rho)
 rho_scaled = np.clip(rho_clamped / max(rho_norm_max, 1e-9), 0.0, 10.0)
-T_modeled = a_param * np.exp(b_param * rho_scaled)
+T_modeled = 26.0 * a_param * np.exp(b_param * rho_scaled)
 
 st.sidebar.metric(
     "Rewards Calculated (BTC)",
     f"{T_modeled:,.3f}",
-    help="Value produced by the exponential model at the current ρ."
+    help="Annual modeled rewards (26 cycles/year) at the current ρ."
 )
 
 use_modeled_T = st.sidebar.checkbox(
@@ -156,7 +145,7 @@ use_modeled_T = st.sidebar.checkbox(
 
 # Effective T used throughout the app
 T_eff = float(T_modeled) if use_modeled_T else float(T_input)
-T_label = f"{T_eff:.0f} BTC/yr" + (" (modeled)" if use_modeled_T else "")
+T_label = f"{T_eff:.0f} BTC/yr" + (" (modeled×26)" if use_modeled_T else "")
 
 # Tier-2 deposit (for metrics) – choose policy for S2
 st.sidebar.subheader("Tier-2 point for metrics")
@@ -220,7 +209,6 @@ APR_base_pt      = apr_base(phi, T_eff, B1, m2, B2_point)
 APR_t2_comp      = apr_tier2_composite(phi, T_eff, S0, B1, m2, B2_point, S2_eff_point, rho, exclude_s2_toggle)
 APR_t2_btc       = apr_tier2_btc_only(phi, T_eff, B1, m2, B2_point)  # BTC-only on Tier-2
 APR_pure_pt      = apr_pure(phi, T_eff, S0, S2_eff_point, rho)
-APR_pure_pt_STX  = apr_pure_stx_terms(phi, T_eff, S0, S2_eff_point)
 B2_max_cap       = b2_max_for_base_target(phi, T_eff, B1, m2, base_target)
 
 colA, colB, colC, colD, colE = st.columns(5)
@@ -246,20 +234,11 @@ with colC.expander(" ?  What is this?"):
         r"$$\mathrm{APR}^{(\mathrm{BTC})}_{2}=m_2\,\frac{(1-\varphi)T_{\text{eff}}}{B_1+m_2B_2}\times100.$$"
     )
 
-# Pure APR (BTC terms) with STX-terms KPI just below (colored)
-with colD.container():
-    colD.metric("Pure-staking APR — point (BTC terms)", f"{APR_pure_pt:.2f} %")
-    st.markdown(
-        f"<div style='margin-top:-8px;color:#16a34a;font-weight:600;'>"
-        f"Pure STX APR (STX terms): {APR_pure_pt_STX:.2f}%</div>",
-        unsafe_allow_html=True
-    )
+colD.metric("Pure-staking APR — point (BTC terms)", f"{APR_pure_pt:.2f} %")
 with colD.expander(" ?  What is this?"):
     st.write("APR for pure STX stakers (S₀ only). Toggle can exclude S₂ from dilution.")
     st.latex(r"""\mathrm{APR}_{\text{pure}}^{(\mathrm{BTC\ terms})}
     =\frac{\varphi T_{\text{eff}}}{S_0+S_2^{(\mathrm{eff})}}\;\rho\times100""")
-    st.latex(r"""\mathrm{APR}_{\text{pure}}^{(\mathrm{STX\ terms})}
-    =\frac{\varphi T_{\text{eff}}}{S_0+S_2^{(\mathrm{eff})}}\times100""")
 
 colE.metric("Capacity:  B₂^max (Base ≥ target)", f"{B2_max_cap:,.0f} BTC")
 with colE.expander(" ?  What is this?"):
@@ -274,23 +253,6 @@ st.caption(
     f"S₂(eff for APR)={'0' if exclude_s2_toggle else f'{S2_eff_point:,.0f}'} STX | "
     f"T_used = {T_label}"
 )
-
-# Optional top-up / release banner
-if show_topup_toggle:
-    S2_min_req   = collat_min * B2_point * rho
-    S2_alpha_req = alpha * S2_min_req if np.isfinite(alpha) else np.nan
-    topup_alpha  = (S2_alpha_req - S2_point) if np.isfinite(S2_alpha_req) else np.nan
-    topup_min    = (S2_min_req  - S2_point)
-
-    msg = (
-        f"Min collateral (10%): **{S2_min_req:,.0f} STX**  |  "
-        f"α×min target (α={alpha:.2f}): **{S2_alpha_req:,.0f} STX**  \n"
-        f"Top-up vs α×min: **{max(0.0, topup_alpha):,.0f} STX**  |  "
-        f"Release vs α×min: **{max(0.0, -topup_alpha):,.0f} STX**  \n"
-        f"Top-up vs min: **{max(0.0, topup_min):,.0f} STX**  |  "
-        f"Release vs min: **{max(0.0, -topup_min):,.0f} STX**"
-    )
-    st.info(msg)
 
 # ----------------------------- Limit functions -------------------------------
 st.markdown("### Cost-opportunity limit functions (targets)")
@@ -536,7 +498,6 @@ cap_user_btc  = user_B2 + (0.0 if exclude_s2_toggle else (user_S2 / rho))
 apr_btc_only  = (m2 * rb_u) * 100.0
 apr_stx_only  = (r_stx(phi, T_eff, S0, (0.0 if exclude_s2_toggle else S2_tot_true)) * rho) * 100.0
 apr_composite = (total_gain / cap_user_btc) * 100.0 if cap_user_btc > 0 else 0.0
-apr_stx_only_stx_terms_user = (r_stx(phi, T_eff, S0, (0.0 if exclude_s2_toggle else S2_tot_true)) * 100.0)
 
 g1, g2, g3, g4 = st.columns(4)
 g1.metric("Your BTC-leg APR (on BTC only)", f"{apr_btc_only:.2f} %")
@@ -593,12 +554,6 @@ total_return_btc = flux_gain_btc + revaluation_gain_btc
 apr_flux_pct_equiv   = (apr_composite * horizon_years)  # composite APR is annual; scale by years
 reval_pct_equiv      = (revaluation_gain_btc / capital_start_btc * 100.0) if capital_start_btc > 0 else 0.0
 total_return_pct     = ((total_return_btc / capital_start_btc) * 100.0) if capital_start_btc > 0 else 0.0
-
-g5, g6, g7, g8 = st.columns(4)
-g5.metric("Your STX-leg APR (STX terms)", f"{apr_stx_only_stx_terms_user:.2f} %")
-g6.metric("Flux return (BTC terms, over horizon)", f"{flux_gain_btc:,.4f} BTC")
-g7.metric("STX bag revaluation (BTC terms)", f"{revaluation_gain_btc:,.4f} BTC")
-g8.metric("Total return (BTC terms)", f"{total_return_btc:,.4f} BTC")
 
 h1, h2, h3 = st.columns(3)
 h1.metric("Flux component (% of start capital)", f"{apr_flux_pct_equiv:.2f} %")
